@@ -1,0 +1,5 @@
+polymarket.db
+__pycache__/
+*.pyc
+test_campos.py
+*.db
