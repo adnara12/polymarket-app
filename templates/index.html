@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket Tracker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0f1117; color: #e2e8f0; min-height: 100vh; }
+  header { background: #1a1d27; border-bottom: 1px solid #2d3148;
+           padding: 1rem 1.5rem; display: flex; align-items: center;
+           justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  header h1 { font-size: 1.2rem; font-weight: 600; color: #a78bfa; }
+  header span { font-size: 0.8rem; color: #64748b; }
+  nav { display: flex; gap: 8px; flex-wrap: wrap; }
+  nav button { background: transparent; border: 1px solid #2d3148; color: #94a3b8;
+               padding: 6px 14px; border-radius: 6px; cursor: pointer;
+               font-size: 0.85rem; transition: all .2s; }
+  nav button.active, nav button:hover { background: #a78bfa; color: #fff; border-color: #a78bfa; }
+  main { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1rem; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+  .controls input, .controls select {
+    background: #1a1d27; border: 1px solid #2d3148; color: #e2e8f0;
+    padding: 7px 12px; border-radius: 6px; font-size: 0.85rem; }
+  .controls input { flex: 1; min-width: 180px; }
+  .btn { background: #a78bfa; color: #fff; border: none; padding: 7px 16px;
+         border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: opacity .2s; }
+  .btn:hover { opacity: 0.85; }
+  .btn.danger { background: #ef4444; }
+  .btn.outline { background: transparent; border: 1px solid #a78bfa; color: #a78bfa; }
+  .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #2d3148; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  thead { background: #1a1d27; }
+  th { padding: 10px 14px; text-align: left; color: #64748b; font-weight: 500;
+       cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: #a78bfa; }
+  td { padding: 10px 14px; border-top: 1px solid #1e2235; white-space: nowrap; }
+  tr:hover td { background: #1a1d27; }
+  .wallet { font-family: monospace; font-size: 0.8rem; color: #a78bfa; cursor: pointer; }
+  .wallet:hover { text-decoration: underline; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
+           font-size: 0.75rem; font-weight: 500; }
+  .badge.green  { background: #14532d; color: #4ade80; }
+  .badge.red    { background: #450a0a; color: #f87171; }
+  .badge.yellow { background: #422006; color: #fbbf24; }
+  .badge.purple { background: #2e1065; color: #c4b5fd; }
+  .bar-wrap { width: 80px; background: #1e2235; border-radius: 4px; height: 6px; display: inline-block; vertical-align: middle; }
+  .bar-fill { height: 6px; border-radius: 4px; background: #a78bfa; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                gap: 10px; margin-bottom: 1.5rem; }
+  .stat-card { background: #1a1d27; border: 1px solid #2d3148; border-radius: 10px; padding: 1rem; }
+  .stat-card .label { font-size: 0.75rem; color: #64748b; margin-bottom: 4px; }
+  .stat-card .value { font-size: 1.4rem; font-weight: 600; color: #a78bfa; }
+  .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+              z-index: 100; align-items: center; justify-content: center; padding: 1rem; }
+  .modal-bg.open { display: flex; }
+  .modal { background: #1a1d27; border: 1px solid #2d3148; border-radius: 12px;
+           width: 100%; max-width: 800px; max-height: 90vh; overflow-y: auto; padding: 1.5rem; }
+  .modal h2 { font-size: 1rem; margin-bottom: 1rem; color: #a78bfa; word-break: break-all; }
+  .close-btn { float: right; background: transparent; border: none; color: #64748b;
+               font-size: 1.2rem; cursor: pointer; }
+  .watchlist-item { background: #1a1d27; border: 1px solid #2d3148; border-radius: 8px;
+                    padding: 12px 16px; margin-bottom: 8px;
+                    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .watchlist-item .alias { font-weight: 500; }
+  .watchlist-item .waddr { font-family: monospace; font-size: 0.78rem; color: #64748b; }
+  .empty { text-align: center; padding: 3rem 1rem; color: #64748b; }
+  .loader { text-align: center; padding: 2rem; color: #64748b; font-size: 0.9rem; }
+  @media (max-width: 600px) {
+    th, td { padding: 8px 10px; }
+    .stat-card .value { font-size: 1.1rem; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Polymarket Tracker</h1>
+  <nav>
+    <button class="active" onclick="showPage('ranking', this)">Ranking</button>
+    <button onclick="showPage('watchlist', this)">Watchlist</button>
+  </nav>
+  <span id="last-update">Cargando...</span>
+</header>
+<main>
+  <div id="page-ranking" class="page active">
+    <div class="controls">
+      <input type="text" id="search" placeholder="Buscar wallet o alias..." oninput="filterTable()">
+      <select id="min-trades" onchange="loadRanking()">
+        <option value="3">Mín. 3 apuestas</option>
+        <option value="5">Mín. 5 apuestas</option>
+        <option value="10">Mín. 10 apuestas</option>
+      </select>
+      <button class="btn outline" onclick="refreshData()">Actualizar datos</button>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Traders</div><div class="value" id="stat-traders">—</div></div>
+      <div class="stat-card"><div class="label">Score insider máx.</div><div class="value" id="stat-max-score">—</div></div>
+      <div class="stat-card"><div class="label">Precio medio</div><div class="value" id="stat-avg-price">—</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th onclick="sortTable('wallet')">Wallet / Alias</th>
+            <th onclick="sortTable('total')">Trades</th>
+            <th onclick="sortTable('avg_price')">Precio medio</th>
+            <th onclick="sortTable('pct_longshot')">% Longshot</th>
+            <th onclick="sortTable('pct_longshot')">Score insider</th>
+            <th onclick="sortTable('last_seen')">Última actividad</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="ranking-body">
+          <tr><td colspan="8" class="loader">Cargando traders...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="page-watchlist" class="page">
+    <div class="controls">
+      <input type="text" id="wl-wallet" placeholder="Wallet (0x...)">
+      <input type="text" id="wl-alias" placeholder="Alias (opcional)" style="max-width:160px">
+      <button class="btn" onclick="addWatchlist()">Añadir</button>
+    </div>
+    <div id="watchlist-list"><div class="loader">Cargando...</div></div>
+  </div>
+</main>
+
+<div class="modal-bg" id="modal-bg" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <button class="close-btn" onclick="closeModalDirect()">✕</button>
+    <h2 id="modal-wallet"></h2>
+    <div class="stats-grid" id="modal-stats"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Mercado</th><th>Lado</th><th>Precio</th>
+            <th>Tamaño</th><th>Fecha</th><th>Dificultad</th>
+          </tr>
+        </thead>
+        <tbody id="modal-trades"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+let allTraders = [];
+let sortKey = 'pct_longshot';
+let sortAsc = false;
+
+function showPage(name, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  btn.classList.add('active');
+  if (name === 'watchlist') loadWatchlist();
+}
+
+async function loadRanking() {
+  const min = document.getElementById('min-trades').value;
+  try {
+    const resp = await fetch('/api/ranking?min_trades=' + min + '&limit=200');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    allTraders = await resp.json();
+    updateStats();
+    renderTable();
+    document.getElementById('last-update').textContent =
+      'Actualizado: ' + new Date().toLocaleTimeString('es-ES');
+  } catch(e) {
+    document.getElementById('ranking-body').innerHTML =
+      '<tr><td colspan="8" class="empty">Error: ' + e.message + '</td></tr>';
+  }
+}
+
+function updateStats() {
+  document.getElementById('stat-traders').textContent = allTraders.length;
+  const maxSc = allTraders.length
+    ? Math.max(...allTraders.map(t => t.pct_longshot || 0)).toFixed(1) + '%' : '—';
+  document.getElementById('stat-max-score').textContent = maxSc;
+  const avgP = allTraders.length
+    ? (allTraders.reduce((s, t) => s + (t.avg_price || 0), 0) / allTraders.length).toFixed(2) : '—';
+  document.getElementById('stat-avg-price').textContent = avgP;
+}
+
+function filterTable() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const filtered = allTraders.filter(t =>
+    t.wallet.toLowerCase().includes(q) || (t.alias || '').toLowerCase().includes(q)
+  );
+  renderTable(filtered);
+}
+
+function sortTable(key) {
+  if (sortKey === key) sortAsc = !sortAsc;
+  else { sortKey = key; sortAsc = false; }
+  renderTable();
+}
+
+function renderTable(data) {
+  const traders = data || allTraders;
+  const sorted = [...traders].sort((a, b) => {
+    const av = a[sortKey] ?? 0, bv = b[sortKey] ?? 0;
+    return sortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+  });
+  const body = document.getElementById('ranking-body');
+  if (!sorted.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty">No hay traders con estos filtros</td></tr>';
+    return;
+  }
+  body.innerHTML = sorted.map(function(t, i) {
+    var sc = t.pct_longshot || 0;
+    var bdg = sc >= 50 ? 'purple' : sc >= 25 ? 'yellow' : 'green';
+    var dt = t.last_seen ? new Date(t.last_seen).toLocaleDateString('es-ES') : '—';
+    var sw = t.wallet.slice(0, 6) + '...' + t.wallet.slice(-4);
+    var al = t.alias || '';
+    return '<tr>' +
+      '<td style="color:#64748b">' + (i+1) + '</td>' +
+      '<td><span class="wallet" title="' + t.wallet + '" onclick="openTrader(\'' + t.wallet + '\')">' + sw + '</span>' +
+      (al ? '<br><span style="font-size:0.75rem;color:#94a3b8">' + al + '</span>' : '') + '</td>' +
+      '<td>' + t.total + '</td>' +
+      '<td>' + (t.avg_price || 0).toFixed(2) + '</td>' +
+      '<td><span class="badge ' + bdg + '">' + sc.toFixed(1) + '%</span></td>' +
+      '<td><div class="bar-wrap"><div class="bar-fill" style="width:' + Math.min(sc,100) + '%"></div></div></td>' +
+      '<td style="color:#64748b;font-size:0.8rem">' + dt + '</td>' +
+      '<td><button class="btn outline" style="padding:3px 10px;font-size:0.75rem" onclick="addToWatchlistQuick(\'' + t.wallet + '\')">+ Watch</button></td>' +
+      '</tr>';
+  }).join('');
+}
+
+async function openTrader(wallet) {
+document.getElementById('modal-wallet').innerHTML =
+  wallet + ' <a href="https://polymarket.com/profile/' + wallet +
+  '" target="_blank" style="font-size:0.75rem;color:#64748b;text-decoration:none;' +
+  'border:1px solid #2d3148;padding:2px 8px;border-radius:4px;margin-left:8px">' +
+  'Ver en Polymarket ↗</a>';
+  document.getElementById('modal-stats').innerHTML = '<div class="loader">Cargando...</div>';
+  document.getElementById('modal-trades').innerHTML = '';
+  document.getElementById('modal-bg').classList.add('open');
+  const resp = await fetch('/api/trader/' + wallet);
+  const d = await resp.json();
+  document.getElementById('modal-stats').innerHTML =
+    '<div class="stat-card"><div class="label">Total trades</div><div class="value">' + d.total_trades + '</div></div>' +
+    '<div class="stat-card"><div class="label">Compras</div><div class="value">' + d.buys + '</div></div>' +
+    '<div class="stat-card"><div class="label">Precio medio</div><div class="value">' + d.avg_price + '</div></div>' +
+    '<div class="stat-card"><div class="label">Longshots</div><div class="value">' + d.longshots + '</div></div>' +
+    '<div class="stat-card"><div class="label">Score insider</div><div class="value">' + d.insider_score + '%</div></div>';
+  document.getElementById('modal-trades').innerHTML = d.trades.map(function(t) {
+    var diff = t.price < 0.15 ? '<span class="badge purple">Muy alto riesgo</span>'
+             : t.price < 0.3  ? '<span class="badge yellow">Alto riesgo</span>'
+             : t.price < 0.6  ? '<span class="badge green">Moderado</span>'
+             : '<span class="badge" style="background:#1e2235;color:#94a3b8">Favorito</span>';
+    var dt = t.timestamp ? new Date(t.timestamp).toLocaleDateString('es-ES') : '—';
+    var q = (t.question || t.market_id || '').slice(0, 45);
+    return '<tr><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="' + (t.question||'') + '">' + q + '</td>' +
+      '<td><span class="badge ' + (t.side==='BUY'?'green':'red') + '">' + t.side + '</span></td>' +
+      '<td>' + (t.price||0).toFixed(3) + '</td>' +
+      '<td>' + (t.size||0).toFixed(0) + ' USDC</td>' +
+      '<td style="color:#64748b">' + dt + '</td>' +
+      '<td>' + diff + '</td></tr>';
+  }).join('');
+}
+
+function closeModal(e) { if (e.target.id === 'modal-bg') closeModalDirect(); }
+function closeModalDirect() { document.getElementById('modal-bg').classList.remove('open'); }
+
+async function loadWatchlist() {
+  const resp = await fetch('/api/watchlist');
+  const list = await resp.json();
+  const el = document.getElementById('watchlist-list');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">Tu watchlist está vacía.<br>Añade wallets desde el ranking.</div>';
+    return;
+  }
+  el.innerHTML = list.map(function(w) {
+    return '<div class="watchlist-item">' +
+      '<div><div class="alias">' + (w.alias || 'Sin alias') + '</div>' +
+      '<div class="waddr">' + w.wallet + '</div></div>' +
+      '<div style="display:flex;gap:8px">' +
+      '<button class="btn outline" onclick="openTrader(\'' + w.wallet + '\')">Ver trades</button>' +
+      '<button class="btn danger" onclick="removeWatchlist(\'' + w.wallet + '\')">Eliminar</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+async function addWatchlist() {
+  var wallet = document.getElementById('wl-wallet').value.trim();
+  var alias  = document.getElementById('wl-alias').value.trim();
+  if (!wallet) { alert('Introduce una wallet'); return; }
+  await fetch('/api/watchlist', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({wallet: wallet, alias: alias})
+  });
+  document.getElementById('wl-wallet').value = '';
+  document.getElementById('wl-alias').value = '';
+  loadWatchlist();
+}
+
+async function addToWatchlistQuick(wallet) {
+  await fetch('/api/watchlist', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({wallet: wallet, alias: ''})
+  });
+  alert('Añadido a watchlist');
+}
+
+async function removeWatchlist(wallet) {
+  await fetch('/api/watchlist/' + wallet, {method: 'DELETE'});
+  loadWatchlist();
+}
+
+async function refreshData() {
+  document.getElementById('last-update').textContent = 'Actualizando...';
+  await fetch('/api/refresh', {method: 'POST'});
+  loadRanking();
+}
+
+loadRanking();
+</script>
+</body>
+</html>
