@@ -56,15 +56,15 @@ def get_ranking(min_trades=3, limit=100):
     rows = c.execute("""
         SELECT
             wallet,
-            COUNT(*)                                         AS total,
-            SUM(CASE WHEN side='BUY' THEN 1 ELSE 0 END)     AS buys,
-            ROUND(AVG(price), 3)                             AS avg_price,
-            MIN(timestamp)                                   AS first_seen,
-            MAX(timestamp)                                   AS last_seen,
-            ROUND(
-                AVG(CASE WHEN price < 0.3 THEN 1.0 ELSE 0.0 END) * 100
-            , 1)                                             AS pct_longshot,
-            MAX(alias)                                       AS alias
+            COUNT(*)                                                AS total,
+            SUM(CASE WHEN side='BUY' THEN 1 ELSE 0 END)            AS buys,
+            ROUND(AVG(price), 3)                                    AS avg_price,
+            ROUND(SUM(size), 2)                                     AS total_invested,
+            MIN(timestamp)                                          AS first_seen,
+            MAX(timestamp)                                          AS last_seen,
+            ROUND(AVG(CASE WHEN price < 0.3 THEN 1.0 ELSE 0.0 END) * 100, 1) AS pct_longshot,
+            MAX(alias)                                              AS alias,
+            GROUP_CONCAT(DISTINCT question)                         AS markets
         FROM trades
         GROUP BY wallet
         HAVING total >= ?
