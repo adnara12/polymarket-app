@@ -43,9 +43,11 @@ def upsert_trades(trades):
     c = conn.cursor()
     c.executemany("""
         INSERT OR IGNORE INTO trades
-            (id, wallet, market_id, question, side, size, price, timestamp, outcome, alias)
+            (id, wallet, market_id, question, side, size, price,
+             timestamp, outcome, alias, outcome_won)
         VALUES
-            (:id, :wallet, :market_id, :question, :side, :size, :price, :timestamp, :outcome, :alias)
+            (:id, :wallet, :market_id, :question, :side, :size, :price,
+             :timestamp, :outcome, :alias, :outcome_won)
     """, trades)
     conn.commit()
     conn.close()
@@ -106,3 +108,52 @@ def remove_from_watchlist(wallet):
     conn.execute("DELETE FROM watchlist WHERE wallet = ?", (wallet,))
     conn.commit()
     conn.close()
+
+def update_market_outcomes(outcomes):
+    """outcomes: lista de {market_id, won} donde won=1 si ganó YES, 0 si perdió"""
+    conn = get_conn()
+    c = conn.cursor()
+    for o in outcomes:
+        c.execute("""
+            UPDATE trades SET outcome_won = ?
+            WHERE market_id = ? AND side = 'BUY' AND outcome = 'Yes'
+        """, (o['won'], o['market_id']))
+        c.execute("""
+            UPDATE trades SET outcome_won = ?
+            WHERE market_id = ? AND side = 'BUY' AND outcome = 'No'
+        """, (1 - o['won'], o['market_id']))
+    conn.commit()
+    conn.close()
+
+def get_ranking(min_trades=3, limit=500):
+    conn = get_conn()
+    c = conn.cursor()
+    rows = c.execute("""
+        SELECT
+            wallet,
+            COUNT(*)                                                         AS total,
+            SUM(CASE WHEN side='BUY' THEN 1 ELSE 0 END)                     AS buys,
+            ROUND(AVG(price), 3)                                             AS avg_price,
+            ROUND(SUM(size), 2)                                              AS total_invested,
+            MIN(timestamp)                                                   AS first_seen,
+            MAX(timestamp)                                                   AS last_seen,
+            ROUND(AVG(CASE WHEN price < 0.3 THEN 1.0 ELSE 0.0 END)*100, 1) AS pct_longshot,
+            MAX(alias)                                                       AS alias,
+            SUM(CASE WHEN outcome_won = 1 THEN 1 ELSE 0 END)                AS trades_ganados,
+            SUM(CASE WHEN outcome_won != -1 THEN 1 ELSE 0 END)              AS trades_resueltos,
+            ROUND(
+                CASE WHEN SUM(CASE WHEN outcome_won != -1 AND side='BUY' THEN 1 ELSE 0 END) > 0
+                THEN SUM(
+                    CASE WHEN outcome_won = 1 AND side='BUY'
+                    THEN (1.0 / NULLIF(price, 0)) ELSE 0 END
+                ) / SUM(CASE WHEN outcome_won != -1 AND side='BUY' THEN 1 ELSE 0 END)
+                ELSE 0 END
+            , 2)                                                             AS insider_score
+        FROM trades
+        GROUP BY wallet
+        HAVING total >= ?
+        ORDER BY insider_score DESC, pct_longshot DESC
+        LIMIT ?
+    """, (min_trades, limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
