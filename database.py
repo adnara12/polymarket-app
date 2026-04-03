@@ -12,65 +12,97 @@ def init_db():
     conn = get_conn()
     c = conn.cursor()
     c.executescript("""
+        CREATE TABLE IF NOT EXISTS traders (
+            wallet          TEXT PRIMARY KEY,
+            alias           TEXT,
+            total_pnl       REAL DEFAULT 0,
+            total_invested  REAL DEFAULT 0,
+            updated_at      TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS trades (
-            id          TEXT PRIMARY KEY,
-            wallet      TEXT NOT NULL,
-            market_id   TEXT,
-            question    TEXT,
-            side        TEXT,
-            size        REAL,
-            price       REAL,
-            timestamp   TEXT,
-            outcome     TEXT,
-            alias       TEXT,
-            outcome_won INTEGER DEFAULT -1
+            id              TEXT PRIMARY KEY,
+            wallet          TEXT NOT NULL,
+            market_id       TEXT,
+            question        TEXT,
+            side            TEXT,
+            size            REAL,
+            price           REAL,
+            timestamp       TEXT,
+            outcome         TEXT,
+            outcome_won     INTEGER DEFAULT -1,
+            pnl             REAL DEFAULT 0,
+            is_relevant     INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS watchlist (
-            wallet      TEXT PRIMARY KEY,
-            alias       TEXT,
-            added_at    TEXT DEFAULT CURRENT_TIMESTAMP
+            wallet          TEXT PRIMARY KEY,
+            alias           TEXT,
+            added_at        TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE INDEX IF NOT EXISTS idx_trades_wallet ON trades(wallet);
-        CREATE INDEX IF NOT EXISTS idx_trades_ts     ON trades(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_trades_wallet   ON trades(wallet);
+        CREATE INDEX IF NOT EXISTS idx_trades_relevant ON trades(is_relevant);
+        CREATE INDEX IF NOT EXISTS idx_traders_pnl     ON traders(total_pnl);
     """)
+    conn.commit()
+    conn.close()
+
+def upsert_trader(wallet, alias, total_pnl, total_invested):
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO traders (wallet, alias, total_pnl, total_invested, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(wallet) DO UPDATE SET
+            alias          = excluded.alias,
+            total_pnl      = excluded.total_pnl,
+            total_invested = excluded.total_invested,
+            updated_at     = CURRENT_TIMESTAMP
+    """, (wallet, alias, total_pnl, total_invested))
     conn.commit()
     conn.close()
 
 def upsert_trades(trades):
     conn = get_conn()
-    c = conn.cursor()
-    c.executemany("""
+    conn.executemany("""
         INSERT OR IGNORE INTO trades
             (id, wallet, market_id, question, side, size, price,
-             timestamp, outcome, alias, outcome_won)
+             timestamp, outcome, outcome_won, pnl, is_relevant)
         VALUES
             (:id, :wallet, :market_id, :question, :side, :size, :price,
-             :timestamp, :outcome, :alias, :outcome_won)
+             :timestamp, :outcome, :outcome_won, :pnl, :is_relevant)
     """, trades)
     conn.commit()
     conn.close()
 
-def get_ranking(min_trades=3, limit=100):
+def get_ranking(min_trades=3, limit=500):
     conn = get_conn()
-    c = conn.cursor()
-    rows = c.execute("""
+    rows = conn.execute("""
         SELECT
-            wallet,
-            COUNT(*)                                                AS total,
-            SUM(CASE WHEN side='BUY' THEN 1 ELSE 0 END)            AS buys,
-            ROUND(AVG(price), 3)                                    AS avg_price,
-            ROUND(SUM(size), 2)                                     AS total_invested,
-            MIN(timestamp)                                          AS first_seen,
-            MAX(timestamp)                                          AS last_seen,
-            ROUND(AVG(CASE WHEN price < 0.3 THEN 1.0 ELSE 0.0 END) * 100, 1) AS pct_longshot,
-            MAX(alias)                                              AS alias,
-            GROUP_CONCAT(DISTINCT question)                         AS markets
-        FROM trades
-        GROUP BY wallet
+            t.wallet,
+            t.alias,
+            t.total_pnl,
+            t.total_invested,
+            COUNT(tr.id)                                                      AS total,
+            SUM(CASE WHEN tr.is_relevant = 1 THEN 1 ELSE 0 END)              AS relevant_trades,
+            SUM(CASE WHEN tr.outcome_won = 1 THEN 1 ELSE 0 END)              AS trades_ganados,
+            SUM(CASE WHEN tr.outcome_won != -1 THEN 1 ELSE 0 END)            AS trades_resueltos,
+            ROUND(AVG(tr.price), 3)                                           AS avg_price,
+            ROUND(AVG(CASE WHEN tr.price < 0.3 THEN 1.0 ELSE 0.0 END)*100,1) AS pct_longshot,
+            MAX(tr.timestamp)                                                 AS last_seen,
+            MIN(tr.timestamp)                                                 AS first_seen,
+            ROUND(
+                CASE WHEN SUM(CASE WHEN tr.outcome_won != -1 AND tr.is_relevant = 1 THEN 1 ELSE 0 END) > 0
+                THEN SUM(CASE WHEN tr.outcome_won = 1 AND tr.is_relevant = 1
+                    THEN (1.0 / NULLIF(tr.price, 0)) ELSE 0 END)
+                   / SUM(CASE WHEN tr.outcome_won != -1 AND tr.is_relevant = 1 THEN 1 ELSE 0 END)
+                ELSE 0 END
+            , 2)                                                              AS insider_score
+        FROM traders t
+        LEFT JOIN trades tr ON t.wallet = tr.wallet
+        GROUP BY t.wallet
         HAVING total >= ?
-        ORDER BY pct_longshot DESC, total DESC
+        ORDER BY insider_score DESC, total_pnl DESC
         LIMIT ?
     """, (min_trades, limit)).fetchall()
     conn.close()
@@ -78,8 +110,7 @@ def get_ranking(min_trades=3, limit=100):
 
 def get_trader_trades(wallet, limit=200):
     conn = get_conn()
-    c = conn.cursor()
-    rows = c.execute("""
+    rows = conn.execute("""
         SELECT * FROM trades
         WHERE wallet = ?
         ORDER BY timestamp DESC
@@ -87,6 +118,14 @@ def get_trader_trades(wallet, limit=200):
     """, (wallet, limit)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+def get_trader_stats(wallet):
+    conn = get_conn()
+    trader = conn.execute(
+        "SELECT * FROM traders WHERE wallet = ?", (wallet,)
+    ).fetchone()
+    conn.close()
+    return dict(trader) if trader else None
 
 def get_watchlist():
     conn = get_conn()
@@ -110,7 +149,6 @@ def remove_from_watchlist(wallet):
     conn.close()
 
 def update_market_outcomes(outcomes):
-    """outcomes: lista de {market_id, won} donde won=1 si ganó YES, 0 si perdió"""
     conn = get_conn()
     c = conn.cursor()
     for o in outcomes:
@@ -124,36 +162,3 @@ def update_market_outcomes(outcomes):
         """, (1 - o['won'], o['market_id']))
     conn.commit()
     conn.close()
-
-def get_ranking(min_trades=3, limit=500):
-    conn = get_conn()
-    c = conn.cursor()
-    rows = c.execute("""
-        SELECT
-            wallet,
-            COUNT(*)                                                         AS total,
-            SUM(CASE WHEN side='BUY' THEN 1 ELSE 0 END)                     AS buys,
-            ROUND(AVG(price), 3)                                             AS avg_price,
-            ROUND(SUM(size), 2)                                              AS total_invested,
-            MIN(timestamp)                                                   AS first_seen,
-            MAX(timestamp)                                                   AS last_seen,
-            ROUND(AVG(CASE WHEN price < 0.3 THEN 1.0 ELSE 0.0 END)*100, 1) AS pct_longshot,
-            MAX(alias)                                                       AS alias,
-            SUM(CASE WHEN outcome_won = 1 THEN 1 ELSE 0 END)                AS trades_ganados,
-            SUM(CASE WHEN outcome_won != -1 THEN 1 ELSE 0 END)              AS trades_resueltos,
-            ROUND(
-                CASE WHEN SUM(CASE WHEN outcome_won != -1 AND side='BUY' THEN 1 ELSE 0 END) > 0
-                THEN SUM(
-                    CASE WHEN outcome_won = 1 AND side='BUY'
-                    THEN (1.0 / NULLIF(price, 0)) ELSE 0 END
-                ) / SUM(CASE WHEN outcome_won != -1 AND side='BUY' THEN 1 ELSE 0 END)
-                ELSE 0 END
-            , 2)                                                             AS insider_score
-        FROM trades
-        GROUP BY wallet
-        HAVING total >= ?
-        ORDER BY insider_score DESC, pct_longshot DESC
-        LIMIT ?
-    """, (min_trades, limit)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
