@@ -77,53 +77,69 @@ def upsert_trades(trades):
 
 def get_ranking(min_trades=0, limit=500):
     conn = get_conn()
+    # Deduplicate first: each (wallet, market_id, outcome) BUY = one position.
+    # Multiple transactions on the same market count as a single prediction.
     rows = conn.execute("""
+        WITH positions AS (
+            SELECT
+                wallet,
+                market_id,
+                outcome,
+                MIN(price)       AS price,
+                MAX(outcome_won) AS outcome_won,
+                MAX(is_relevant) AS is_relevant,
+                MAX(timestamp)   AS last_ts,
+                MIN(timestamp)   AS first_ts
+            FROM trades
+            WHERE side = 'BUY'
+            GROUP BY wallet, market_id, outcome
+        )
         SELECT
             t.wallet,
             t.alias,
             t.total_pnl,
             t.total_invested,
-            COUNT(tr.id)                                         AS total,
-            SUM(CASE WHEN tr.is_relevant = 1 THEN 1 ELSE 0 END) AS relevant_trades,
-            SUM(CASE WHEN tr.outcome_won = 1 THEN 1 ELSE 0 END) AS trades_ganados,
-            SUM(CASE WHEN tr.outcome_won != -1 THEN 1 ELSE 0 END) AS trades_resueltos,
-            ROUND(AVG(tr.price), 3)                              AS avg_price,
-            MAX(tr.timestamp)                                    AS last_seen,
-            MIN(tr.timestamp)                                    AS first_seen,
+            COUNT(p.market_id)                                        AS total,
+            SUM(CASE WHEN p.is_relevant = 1 THEN 1 ELSE 0 END)       AS relevant_trades,
+            SUM(CASE WHEN p.outcome_won = 1 THEN 1 ELSE 0 END)       AS trades_ganados,
+            SUM(CASE WHEN p.outcome_won != -1 THEN 1 ELSE 0 END)     AS trades_resueltos,
+            ROUND(AVG(p.price), 3)                                    AS avg_price,
+            MAX(p.last_ts)                                            AS last_seen,
+            MIN(p.first_ts)                                           AS first_seen,
 
-            -- Longshots: BUY with price < 0.30 that are resolved
-            SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
-                THEN 1 ELSE 0 END)                               AS longshots_resueltos,
-            SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won = 1
-                THEN 1 ELSE 0 END)                               AS longshots_ganados,
+            -- Longshot positions: price < 0.30, resolved
+            SUM(CASE WHEN p.price < 0.30 AND p.outcome_won != -1
+                THEN 1 ELSE 0 END)                                    AS longshots_resueltos,
+            SUM(CASE WHEN p.price < 0.30 AND p.outcome_won = 1
+                THEN 1 ELSE 0 END)                                    AS longshots_ganados,
 
-            -- % acierto en longshots (0 if no resolved longshots)
+            -- % acierto en longshots sobre posiciones únicas
             ROUND(
-                CASE WHEN SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                CASE WHEN SUM(CASE WHEN p.price < 0.30 AND p.outcome_won != -1
                                    THEN 1 ELSE 0 END) > 0
                 THEN 100.0
-                     * SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won = 1
+                     * SUM(CASE WHEN p.price < 0.30 AND p.outcome_won = 1
                                 THEN 1 ELSE 0 END)
-                     / SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                     / SUM(CASE WHEN p.price < 0.30 AND p.outcome_won != -1
                                 THEN 1 ELSE 0 END)
                 ELSE 0 END
-            , 1)                                                 AS longshot_win_rate,
+            , 1)                                                      AS longshot_win_rate,
 
             -- Insider Score = (win_rate / 100) * total_pnl
             ROUND(
-                CASE WHEN SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                CASE WHEN SUM(CASE WHEN p.price < 0.30 AND p.outcome_won != -1
                                    THEN 1 ELSE 0 END) > 0
                 THEN (1.0
-                     * SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won = 1
+                     * SUM(CASE WHEN p.price < 0.30 AND p.outcome_won = 1
                                 THEN 1 ELSE 0 END)
-                     / SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                     / SUM(CASE WHEN p.price < 0.30 AND p.outcome_won != -1
                                 THEN 1 ELSE 0 END))
                      * t.total_pnl
                 ELSE 0 END
-            , 0)                                                 AS insider_score
+            , 0)                                                      AS insider_score
 
         FROM traders t
-        LEFT JOIN trades tr ON t.wallet = tr.wallet
+        LEFT JOIN positions p ON t.wallet = p.wallet
         GROUP BY t.wallet
         HAVING longshot_win_rate >= 65
         ORDER BY insider_score DESC, total_pnl DESC
