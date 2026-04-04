@@ -1,3 +1,4 @@
+import os
 import sys
 import requests
 import hashlib
@@ -5,8 +6,15 @@ from datetime import datetime, timezone, timedelta
 from scraper import fetch_user_activity, is_relevant_market
 from database import get_watchlist
 
-TELEGRAM_TOKEN   = "8619776671:AAHCHbUETDVtnAg-HbAV-E5lJvSbvQ-CZZE"
-TELEGRAM_CHAT_ID = "2001871424"
+# Load .env file if present (for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # Tracks already-alerted trades to avoid duplicates within the same session
 _seen_trade_ids: set = set()
