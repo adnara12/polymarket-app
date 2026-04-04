@@ -1,12 +1,18 @@
+import sys
 import requests
 import hashlib
 import time
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from database import init_db, upsert_trader, upsert_trades, get_conn
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 DATA_API  = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API  = "https://clob.polymarket.com"
 
 NOISE_KEYWORDS = [
     "up or down", "above $", "below $", "price above", "price below",
@@ -25,19 +31,19 @@ NOISE_KEYWORDS = [
     "hourly", "daily candle", "weekly candle",
     "trail blazers", "lakers", "celtics", "knicks", "warriors",
     "nba:", "nfl:", "mlb:", "nhl:", "epl:",
-"manchester", "fc ", " fc", "juventus", "barcelona", "real madrid",
-"chelsea", "arsenal", "liverpool", "milan", "inter",
-"nba finals", "super bowl", "superbowl", "world series",
-"champions league", "premier league", "la liga", "serie a",
-"atp", "wta", "wimbledon", "us open", "french open",
-"call of duty", "faze", "esport", "gaming",
-"oscar", "sag award", "golden globe", "emmy",
-"proof of love", "reality show", "bachelor",
-"ucl", "uefa", "fifa",
-"club brugge", "marseille", "brugge",
-"golf", "pga", "lpga", "masters",
-"nfl", "nba", "mlb", "nhl",
-"combined points", "margin of victory",
+    "manchester", "fc ", " fc", "juventus", "barcelona", "real madrid",
+    "chelsea", "arsenal", "liverpool", "milan", "inter",
+    "nba finals", "super bowl", "superbowl", "world series",
+    "champions league", "premier league", "la liga", "serie a",
+    "atp", "wta", "wimbledon", "us open", "french open",
+    "call of duty", "faze", "esport", "gaming",
+    "oscar", "sag award", "golden globe", "emmy",
+    "proof of love", "reality show", "bachelor",
+    "ucl", "uefa", "fifa",
+    "club brugge", "marseille", "brugge",
+    "golf", "pga", "lpga", "masters",
+    "nfl", "nba", "mlb", "nhl",
+    "combined points", "margin of victory",
 ]
 
 RELEVANT_KEYWORDS = [
@@ -68,15 +74,15 @@ RELEVANT_KEYWORDS = [
     "fired as manager", "new manager", "new coach",
     "will play for", "championship winner",
     "world cup winner", "superbowl winner",
-"win the", "winner", "will win", "will be", "will the",
-"next ", "first ", "when will", "how many",
-"2024", "2025", "2026",
-"trump", "biden", "harris", "republican", "democrat",
-"ukraine", "russia", "china", "israel", "iran", "gaza",
-"supreme court", "white house", "congress",
-"elon", "musk", "tesla", "spacex",
-"fed ", "powell", "yellen",
-"oil ", "gold ", "dollar",
+    "win the", "winner", "will win", "will be", "will the",
+    "next ", "first ", "when will", "how many",
+    "2024", "2025", "2026",
+    "trump", "biden", "harris", "republican", "democrat",
+    "ukraine", "russia", "china", "israel", "iran", "gaza",
+    "supreme court", "white house", "congress",
+    "elon", "musk", "tesla", "spacex",
+    "fed ", "powell", "yellen",
+    "oil ", "gold ", "dollar",
 ]
 
 def is_relevant_market(question):
@@ -89,17 +95,32 @@ def is_relevant_market(question):
             return True
     return False
 
-def fetch_user_positions(wallet):
-    try:
-        r = requests.get(f"{DATA_API}/positions",
-            params={"user": wallet, "limit": 500}, timeout=15)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        return data if isinstance(data, list) else []
-    except Exception as e:
-        print(f"  [!] positions error {wallet[:10]}: {e}")
-        return []
+def fetch_leaderboard(category="politics", time_period="all", order_by="PNL", n=100):
+    """Fetch top traders from Polymarket leaderboard API (50 per page)."""
+    traders = []
+    offset = 0
+    while len(traders) < n:
+        try:
+            r = requests.get(f"{DATA_API}/v1/leaderboard", params={
+                "timePeriod": time_period,
+                "orderBy":    order_by,
+                "limit":      50,
+                "offset":     offset,
+                "category":   category,
+            }, timeout=15)
+            if r.status_code != 200:
+                break
+            batch = r.json()
+            if not batch:
+                break
+            traders.extend(batch)
+            if len(batch) < 50:
+                break
+            offset += 50
+        except Exception as e:
+            print(f"  [!] leaderboard error: {e}")
+            break
+    return traders[:n]
 
 def fetch_user_activity(wallet, limit=500, offset=0):
     try:
@@ -110,24 +131,18 @@ def fetch_user_activity(wallet, limit=500, offset=0):
             return []
         data = r.json()
         return data if isinstance(data, list) else []
-    except Exception as e:
-        print(f"  [!] activity error {wallet[:10]}: {e}")
+    except Exception:
         return []
 
 def fetch_market_result(condition_id):
     try:
-        r = requests.get(f"{GAMMA_API}/markets/{condition_id}", timeout=10)
+        r = requests.get(f"{CLOB_API}/markets/{condition_id}", timeout=10)
         if r.status_code != 200:
             return None
         data = r.json()
-        prices_raw = data.get("outcomePrices", "[]")
-        prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
-        prices = [float(p) for p in prices]
-        outcomes_raw = data.get("outcomes", '["Yes","No"]')
-        outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
-        for i, p in enumerate(prices):
-            if p >= 0.99:
-                return outcomes[i] if i < len(outcomes) else None
+        for token in data.get("tokens", []):
+            if token.get("winner") is True:
+                return token.get("outcome")
         return None
     except Exception:
         return None
@@ -157,7 +172,6 @@ def parse_activity(act, wallet, market_cache):
     if market_id and side == "BUY" and outcome:
         if market_id not in market_cache:
             market_cache[market_id] = fetch_market_result(market_id)
-            time.sleep(0.1)
         winner = market_cache[market_id]
         if winner:
             outcome_won = 1 if outcome.strip().lower() == winner.strip().lower() else 0
@@ -180,182 +194,86 @@ def parse_activity(act, wallet, market_cache):
         "is_relevant": relevant,
     }
 
-def scrape_seed(n_markets=30):
-    print("[scraper] Descarga inicial de wallets (seed)...")
-    try:
-        r = requests.get(f"{GAMMA_API}/markets", params={
-            "closed": "true", "limit": 500,
-            "order": "volume", "ascending": "false",
-            "volumeNum_gte": 10000
-        }, timeout=15)
-        all_markets = r.json()
-    except Exception as e:
-        print(f"[scraper] Error obteniendo mercados: {e}")
+def _fetch_trader_activity(wallet, max_trades):
+    """Download full activity list for one wallet."""
+    activity = fetch_user_activity(wallet, limit=500, offset=0)
+    if not activity:
+        return []
+    offset = 500
+    while len(activity) < max_trades * 2 and len(activity) % 500 == 0:
+        batch = fetch_user_activity(wallet, limit=500, offset=offset)
+        if not batch:
+            break
+        activity.extend(batch)
+        if len(batch) < 500:
+            break
+        offset += 500
+    return activity[:max_trades * 2]
+
+def scrape_from_leaderboard(n_traders=100, max_trades=200, workers=5,
+                             category="politics", time_period="all"):
+    print(f"[scraper] Obteniendo top {n_traders} traders del leaderboard ({category}/{time_period})...")
+    lb = fetch_leaderboard(category=category, time_period=time_period, n=n_traders)
+    if not lb:
+        print("[scraper] No se pudo obtener el leaderboard.")
         return 0
 
-    markets = [m for m in all_markets if is_relevant_market(m.get("question", ""))][:n_markets]
-    print(f"[scraper] {len(markets)} mercados relevantes de {len(all_markets)} totales.")
+    print(f"[scraper] {len(lb)} traders encontrados:")
+    for t in lb[:10]:
+        print(f"  #{t['rank']} {t['userName']} | PnL: {float(t.get('pnl',0)):,.0f} USDC")
 
-    seed_trades = []
-    for idx, m in enumerate(markets):
-        cid      = m.get("conditionId") or ""
-        question = m.get("question", "")
-        if not cid:
-            continue
-
-        print(f"  [{idx+1}/{len(markets)}] {question[:60]}")
-
-        try:
-            trades_r = requests.get(f"{DATA_API}/trades",
-                params={"market": cid, "limit": 500}, timeout=15)
-            if trades_r.status_code != 200:
-                continue
-            raw_trades = trades_r.json()
-        except Exception:
-            continue
-
-        for t in raw_trades:
-            w = t.get("proxyWallet") or ""
-            if not w:
-                continue
-            ts_raw = t.get("timestamp")
-            try:
-                ts = datetime.fromtimestamp(int(ts_raw), tz=timezone.utc).isoformat() if ts_raw else ""
-            except Exception:
-                ts = ""
-            raw_id = f"{w}{cid}{t.get('side','')}{t.get('size',0)}{t.get('price',0)}{ts_raw}"
-            seed_trades.append({
-                "id":          hashlib.md5(raw_id.encode()).hexdigest(),
-                "wallet":      w,
-                "market_id":   cid,
-                "question":    question,
-                "side":        t.get("side", "").upper(),
-                "size":        float(t.get("size") or 0),
-                "price":       float(t.get("price") or 0),
-                "timestamp":   ts,
-                "outcome":     t.get("outcome") or "",
-                "outcome_won": -1,
-                "pnl":         0.0,
-                "is_relevant": 1,
-            })
-        time.sleep(0.3)
-
-    if seed_trades:
-        upsert_trades(seed_trades)
-
-    conn = get_conn()
-    n_wallets = conn.execute("SELECT COUNT(DISTINCT wallet) FROM trades").fetchone()[0]
-    conn.close()
-    print(f"[scraper] Seed completado. {len(seed_trades)} trades, {n_wallets} wallets.")
-    return n_wallets
-
-def scrape_top_traders(n_traders=100, min_pnl=200, max_trades=200):
-    conn = get_conn()
-    wallets = [r[0] for r in conn.execute(
-        "SELECT DISTINCT wallet FROM trades ORDER BY size DESC LIMIT 3000"
-    ).fetchall()]
-    conn.close()
-
-    if not wallets:
-        print("[scraper] No hay wallets. Ejecutando seed...")
-        scrape_seed()
-        conn = get_conn()
-        wallets = [r[0] for r in conn.execute(
-            "SELECT DISTINCT wallet FROM trades LIMIT 3000"
-        ).fetchall()]
-        conn.close()
-
-    print(f"[scraper] Calculando PnL real de {len(wallets)} wallets...")
-    trader_pnl = []
-
-    for i, wallet in enumerate(wallets):
-        positions = fetch_user_positions(wallet)
-        if not positions:
-            time.sleep(0.05)
-            continue
-
-        total_pnl      = sum(float(p.get("cashPnl") or 0) for p in positions)
-        total_invested = sum(float(p.get("initialValue") or 0) for p in positions)
-        n_positions    = len(positions)
-        alias          = ""
-        for p in positions:
-            alias = p.get("name") or p.get("pseudonym") or ""
-            if alias:
-                break
-
-        if total_pnl >= min_pnl and n_positions <= max_trades:
-            trader_pnl.append((wallet, alias, total_pnl, total_invested, n_positions))
-
-        if (i + 1) % 50 == 0:
-            print(f"  {i+1}/{len(wallets)} procesadas... ({len(trader_pnl)} selectivos)")
-        time.sleep(0.1)
-
-    trader_pnl.sort(key=lambda x: x[2], reverse=True)
-    top_traders = trader_pnl[:n_traders]
-
-    print(f"\n[scraper] Top {len(top_traders)} traders selectivos:")
-    for rank, (w, alias, pnl, inv, n_pos) in enumerate(top_traders[:15]):
-        print(f"  #{rank+1} {alias or w[:14]} | PnL: +{pnl:.0f} USDC | Posiciones: {n_pos}")
+    print(f"\n[scraper] Descargando actividad ({workers} workers en paralelo)...")
+    trader_activities = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_fetch_trader_activity, t["proxyWallet"], max_trades): t
+                   for t in lb}
+        done = 0
+        for fut in as_completed(futures):
+            t = futures[fut]
+            trader_activities[t["proxyWallet"]] = fut.result()
+            done += 1
+            if done % 10 == 0:
+                print(f"  {done}/{len(lb)} actividades descargadas...")
 
     total_trades = 0
     market_cache = {}
 
-    for rank, (wallet, alias, pnl, invested, n_pos) in enumerate(top_traders):
-        print(f"\n[{rank+1}/{len(top_traders)}] {alias or wallet[:14]} | PnL: +{pnl:.0f} USDC | {n_pos} pos.")
-        upsert_trader(wallet, alias, pnl, invested)
+    for idx, t in enumerate(lb):
+        wallet = t["proxyWallet"]
+        alias  = t.get("userName") or t.get("pseudonym") or ""
+        pnl    = float(t.get("pnl") or 0)
+        vol    = float(t.get("vol") or 0)
 
-        print(f"  Descargando actividad...")
-        activity = fetch_user_activity(wallet, limit=500, offset=0)
+        upsert_trader(wallet, alias, pnl, vol)
+
+        activity = trader_activities.get(wallet, [])
+        print(f"\n[{idx+1}/{len(lb)}] {alias} | PnL: {pnl:,.0f} | {len(activity)} registros")
 
         if not activity:
             print(f"  Sin actividad.")
             continue
 
-        if len(activity) >= 500:
-            all_activity = activity
-            offset = 500
-            while len(all_activity) < max_trades * 2:
-                batch = fetch_user_activity(wallet, limit=500, offset=offset)
-                if not batch:
-                    break
-                all_activity.extend(batch)
-                if len(batch) < 500:
-                    break
-                offset += 500
-                time.sleep(0.2)
-            activity = all_activity[:max_trades * 2]
-
-        print(f"  {len(activity)} registros")
-
         trades = []
         for act in activity:
-            t = parse_activity(act, wallet, market_cache)
-            if t and t["size"] > 0:
-                trades.append(t)
+            tr = parse_activity(act, wallet, market_cache)
+            if tr and tr["size"] > 0:
+                trades.append(tr)
 
         if trades:
             upsert_trades(trades)
             total_trades += len(trades)
-            relevant = sum(1 for t in trades if t["is_relevant"])
-            won      = sum(1 for t in trades if t["outcome_won"] == 1)
+            relevant = sum(1 for tr in trades if tr["is_relevant"])
+            won      = sum(1 for tr in trades if tr["outcome_won"] == 1)
             print(f"  {len(trades)} trades | {relevant} relevantes | {won} ganados")
         else:
             print(f"  Sin trades validos.")
 
-        time.sleep(0.3)
-
-    print(f"\n[scraper] Completado. {total_trades} trades de {len(top_traders)} traders.")
+    print(f"\n[scraper] Completado. {total_trades} trades de {len(lb)} traders.")
     return total_trades
 
 def run_scraper(pages=10):
-    conn = get_conn()
-    count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
-    conn.close()
-    if count < 100:
-        scrape_seed(n_markets=30)
-    return scrape_top_traders(n_traders=100, min_pnl=200, max_trades=200)
+    return scrape_from_leaderboard(n_traders=100, max_trades=200)
 
 if __name__ == "__main__":
     init_db()
-    scrape_seed(n_markets=30)
-    scrape_top_traders(n_traders=200, min_pnl=200, max_trades=200)
+    scrape_from_leaderboard(n_traders=100, max_trades=200)

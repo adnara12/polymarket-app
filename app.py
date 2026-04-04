@@ -4,6 +4,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from database import (init_db, get_ranking, get_trader_trades,
                       get_watchlist, add_to_watchlist, remove_from_watchlist)
 from scraper import run_scraper
+from alerts import check_watchlist_alerts, send_telegram
 import atexit
 
 app = Flask(__name__)
@@ -66,9 +67,10 @@ def api_refresh():
     n = run_scraper(pages=5)
     return jsonify({"ok": True, "new_trades": n})
 
-# ── Scheduler: actualiza cada 5 minutos ───────────────────────────
+# ── Scheduler ─────────────────────────────────────────────────────
 scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: run_scraper(pages=5), "interval", minutes=5)
+scheduler.add_job(lambda: run_scraper(pages=5),       "interval", minutes=5,  id="scraper")
+scheduler.add_job(check_watchlist_alerts,             "interval", minutes=5,  id="alerts")
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
 
