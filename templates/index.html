@@ -147,8 +147,8 @@
       </div>
       <div class="filters-row" style="margin-top:10px">
         <div class="filter-group">
-          <label>% Longshot mín.</label>
-          <input type="number" id="f-longshot" placeholder="0" min="0" max="100" oninput="applyFilters()">
+          <label>% Acierto long. mín.</label>
+          <input type="number" id="f-longshot" placeholder="65" min="0" max="100" oninput="applyFilters()">
         </div>
         <div class="filter-group">
           <label>Activo últimos días</label>
@@ -163,10 +163,11 @@
         <div class="filter-group">
           <label>Ordenar por</label>
           <select id="f-sort" onchange="applyFilters()">
-            <option value="pct_longshot">Score insider</option>
+            <option value="insider_score">Score insider</option>
+            <option value="longshot_win_rate">% Acierto longshots</option>
+            <option value="total_pnl">PnL total</option>
             <option value="total">Nº trades</option>
             <option value="avg_price">Precio medio</option>
-            <option value="total_invested">Total invertido</option>
             <option value="last_seen">Última actividad</option>
           </select>
         </div>
@@ -188,8 +189,8 @@
     <div class="stats-grid">
       <div class="stat-card"><div class="label">Traders</div><div class="value" id="stat-traders">—</div></div>
       <div class="stat-card"><div class="label">Score insider máx.</div><div class="value" id="stat-max-score">—</div></div>
+      <div class="stat-card"><div class="label">% Acierto long. máx.</div><div class="value" id="stat-max-winrate">—</div></div>
       <div class="stat-card"><div class="label">Precio medio</div><div class="value" id="stat-avg-price">—</div></div>
-      <div class="stat-card"><div class="label">Total invertido</div><div class="value" id="stat-invested">—</div></div>
     </div>
 
     <div class="results-count" id="results-count"></div>
@@ -202,8 +203,8 @@
             <th>Wallet / Alias</th>
             <th>Trades</th>
             <th>Precio medio</th>
-            <th>Invertido</th>
-            <th>% Longshot</th>
+            <th>PnL total</th>
+            <th>% Acierto Long.</th>
             <th>Score insider</th>
             <th>Última actividad</th>
             <th></th>
@@ -273,14 +274,20 @@ async function loadRanking() {
   }
 }
 
+function fmtScore(v) {
+  if (!v) return '—';
+  if (v >= 1e6) return (v/1e6).toFixed(2)+'M';
+  if (v >= 1e3) return (v/1e3).toFixed(1)+'K';
+  return v.toFixed(0);
+}
 function updateStats(traders) {
   document.getElementById('stat-traders').textContent = traders.length;
-  var maxSc = traders.length ? Math.max.apply(null, traders.map(function(t){ return t.pct_longshot||0; })).toFixed(1)+'%' : '—';
+  var maxSc = traders.length ? fmtScore(Math.max.apply(null, traders.map(function(t){ return t.insider_score||0; }))) : '—';
   document.getElementById('stat-max-score').textContent = maxSc;
+  var maxWr = traders.length ? Math.max.apply(null, traders.map(function(t){ return t.longshot_win_rate||0; })).toFixed(1)+'%' : '—';
+  document.getElementById('stat-max-winrate').textContent = maxWr;
   var avgP = traders.length ? (traders.reduce(function(s,t){ return s+(t.avg_price||0); },0)/traders.length).toFixed(2) : '—';
   document.getElementById('stat-avg-price').textContent = avgP;
-  var inv = traders.reduce(function(s,t){ return s+(t.total_invested||0); },0);
-  document.getElementById('stat-invested').textContent = inv > 1000 ? (inv/1000).toFixed(1)+'K' : inv.toFixed(0);
 }
 
 function applyFilters() {
@@ -305,7 +312,7 @@ function applyFilters() {
       if (invOp === 'gt' && (t.total_invested||0) <= invVal) return false;
       if (invOp === 'lt' && (t.total_invested||0) >= invVal) return false;
     }
-    if (longshot && (t.pct_longshot||0) < longshot) return false;
+    if (longshot && (t.longshot_win_rate||0) < longshot) return false;
     if (cutoff && t.last_seen && new Date(t.last_seen) < cutoff) return false;
     return true;
   });
@@ -330,7 +337,7 @@ function resetFilters() {
   document.getElementById('f-inv-val').value = '';
   document.getElementById('f-longshot').value = '';
   document.getElementById('f-days').value = '';
-  document.getElementById('f-sort').value = 'pct_longshot';
+  document.getElementById('f-sort').value = 'insider_score';
   document.getElementById('f-order').value = 'desc';
   applyFilters();
 }
@@ -342,21 +349,25 @@ function renderTable(traders) {
     return;
   }
   body.innerHTML = traders.map(function(t, i) {
-    var sc  = t.pct_longshot || 0;
-    var bdg = sc >= 50 ? 'purple' : sc >= 25 ? 'yellow' : 'green';
+    var wr  = t.longshot_win_rate || 0;
+    var sc  = t.insider_score || 0;
+    var bdg = wr >= 90 ? 'purple' : wr >= 75 ? 'yellow' : 'green';
     var dt  = t.last_seen ? new Date(t.last_seen).toLocaleDateString('es-ES') : '—';
     var sw  = t.wallet.slice(0,6) + '...' + t.wallet.slice(-4);
     var al  = t.alias || '';
-    var inv = t.total_invested ? (t.total_invested > 1000 ? (t.total_invested/1000).toFixed(1)+'K' : t.total_invested.toFixed(0)) : '—';
+    var pnl = t.total_pnl ? (t.total_pnl >= 1e6 ? (t.total_pnl/1e6).toFixed(2)+'M'
+                           : t.total_pnl >= 1e3 ? (t.total_pnl/1e3).toFixed(1)+'K'
+                           : t.total_pnl.toFixed(0)) : '—';
     return '<tr>' +
       '<td style="color:#64748b">' + (i+1) + '</td>' +
       '<td><span class="wallet" title="' + t.wallet + '" onclick="openTrader(\'' + t.wallet + '\')">' + sw + '</span>' +
       (al ? '<br><span style="font-size:0.75rem;color:#94a3b8">' + al + '</span>' : '') + '</td>' +
       '<td>' + t.total + '</td>' +
       '<td>' + (t.avg_price||0).toFixed(2) + '</td>' +
-      '<td>' + inv + ' USDC</td>' +
-      '<td><span class="badge ' + bdg + '">' + sc.toFixed(1) + '%</span></td>' +
-      '<td><div class="bar-wrap"><div class="bar-fill" style="width:' + Math.min(sc,100) + '%"></div></div></td>' +
+      '<td style="color:#4ade80">' + pnl + ' USDC</td>' +
+      '<td><span class="badge ' + bdg + '">' + wr.toFixed(1) + '%</span>' +
+        ' <span style="color:#64748b;font-size:0.75rem">(' + (t.longshots_ganados||0) + '/' + (t.longshots_resueltos||0) + ')</span></td>' +
+      '<td style="color:#a78bfa;font-weight:600">' + fmtScore(sc) + '</td>' +
       '<td style="color:#64748b;font-size:0.8rem">' + dt + '</td>' +
       '<td><button class="btn outline" style="padding:3px 10px;font-size:0.75rem" onclick="addToWatchlistQuick(\'' + t.wallet + '\')">+ Watch</button></td>' +
       '</tr>';

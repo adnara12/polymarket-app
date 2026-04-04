@@ -95,8 +95,10 @@ def is_relevant_market(question):
             return True
     return False
 
+LEADERBOARD_CATEGORIES = ["politics", "geopolitics", "tech", "economy", "sports"]
+
 def fetch_leaderboard(category="politics", time_period="all", order_by="PNL", n=100):
-    """Fetch top traders from Polymarket leaderboard API (50 per page)."""
+    """Fetch top n traders from one leaderboard category (50 per page)."""
     traders = []
     offset = 0
     while len(traders) < n:
@@ -118,9 +120,29 @@ def fetch_leaderboard(category="politics", time_period="all", order_by="PNL", n=
                 break
             offset += 50
         except Exception as e:
-            print(f"  [!] leaderboard error: {e}")
+            print(f"  [!] leaderboard error ({category}): {e}")
             break
     return traders[:n]
+
+def fetch_all_leaderboards(n_per_category=100, workers=5):
+    """Fetch top traders from all categories and merge, keeping best PnL per wallet."""
+    merged = {}
+
+    def _fetch(cat):
+        return cat, fetch_leaderboard(category=cat, n=n_per_category)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_fetch, cat): cat for cat in LEADERBOARD_CATEGORIES}
+        for fut in as_completed(futures):
+            cat, entries = fut.result()
+            print(f"  {cat}: {len(entries)} traders")
+            for entry in entries:
+                wallet = entry["proxyWallet"]
+                pnl    = float(entry.get("pnl") or 0)
+                if wallet not in merged or pnl > float(merged[wallet].get("pnl") or 0):
+                    merged[wallet] = entry
+
+    return sorted(merged.values(), key=lambda x: float(x.get("pnl") or 0), reverse=True)
 
 def fetch_user_activity(wallet, limit=500, offset=0):
     try:
@@ -211,16 +233,16 @@ def _fetch_trader_activity(wallet, max_trades):
     return activity[:max_trades * 2]
 
 def scrape_from_leaderboard(n_traders=100, max_trades=200, workers=5,
-                             category="politics", time_period="all"):
-    print(f"[scraper] Obteniendo top {n_traders} traders del leaderboard ({category}/{time_period})...")
-    lb = fetch_leaderboard(category=category, time_period=time_period, n=n_traders)
+                             category=None, time_period="all"):
+    print(f"[scraper] Obteniendo traders del leaderboard ({', '.join(LEADERBOARD_CATEGORIES)})...")
+    lb = fetch_all_leaderboards(n_per_category=n_traders, workers=workers)
     if not lb:
         print("[scraper] No se pudo obtener el leaderboard.")
         return 0
 
-    print(f"[scraper] {len(lb)} traders encontrados:")
-    for t in lb[:10]:
-        print(f"  #{t['rank']} {t['userName']} | PnL: {float(t.get('pnl',0)):,.0f} USDC")
+    print(f"[scraper] {len(lb)} traders unicos encontrados:")
+    for i, t in enumerate(lb[:10], 1):
+        print(f"  #{i} {t['userName']} | PnL: {float(t.get('pnl',0)):,.0f} USDC")
 
     print(f"\n[scraper] Descargando actividad ({workers} workers en paralelo)...")
     trader_activities = {}

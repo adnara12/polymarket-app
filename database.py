@@ -75,7 +75,7 @@ def upsert_trades(trades):
     conn.commit()
     conn.close()
 
-def get_ranking(min_trades=3, limit=500):
+def get_ranking(min_trades=0, limit=500):
     conn = get_conn()
     rows = conn.execute("""
         SELECT
@@ -83,28 +83,52 @@ def get_ranking(min_trades=3, limit=500):
             t.alias,
             t.total_pnl,
             t.total_invested,
-            COUNT(tr.id)                                                      AS total,
-            SUM(CASE WHEN tr.is_relevant = 1 THEN 1 ELSE 0 END)              AS relevant_trades,
-            SUM(CASE WHEN tr.outcome_won = 1 THEN 1 ELSE 0 END)              AS trades_ganados,
-            SUM(CASE WHEN tr.outcome_won != -1 THEN 1 ELSE 0 END)            AS trades_resueltos,
-            ROUND(AVG(tr.price), 3)                                           AS avg_price,
-            ROUND(AVG(CASE WHEN tr.price < 0.3 THEN 1.0 ELSE 0.0 END)*100,1) AS pct_longshot,
-            MAX(tr.timestamp)                                                 AS last_seen,
-            MIN(tr.timestamp)                                                 AS first_seen,
+            COUNT(tr.id)                                         AS total,
+            SUM(CASE WHEN tr.is_relevant = 1 THEN 1 ELSE 0 END) AS relevant_trades,
+            SUM(CASE WHEN tr.outcome_won = 1 THEN 1 ELSE 0 END) AS trades_ganados,
+            SUM(CASE WHEN tr.outcome_won != -1 THEN 1 ELSE 0 END) AS trades_resueltos,
+            ROUND(AVG(tr.price), 3)                              AS avg_price,
+            MAX(tr.timestamp)                                    AS last_seen,
+            MIN(tr.timestamp)                                    AS first_seen,
+
+            -- Longshots: BUY with price < 0.30 that are resolved
+            SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                THEN 1 ELSE 0 END)                               AS longshots_resueltos,
+            SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won = 1
+                THEN 1 ELSE 0 END)                               AS longshots_ganados,
+
+            -- % acierto en longshots (0 if no resolved longshots)
             ROUND(
-                CASE WHEN SUM(CASE WHEN tr.outcome_won != -1 AND tr.is_relevant = 1 THEN 1 ELSE 0 END) > 0
-                THEN SUM(CASE WHEN tr.outcome_won = 1 AND tr.is_relevant = 1
-                    THEN (1.0 / NULLIF(tr.price, 0)) ELSE 0 END)
-                   / SUM(CASE WHEN tr.outcome_won != -1 AND tr.is_relevant = 1 THEN 1 ELSE 0 END)
+                CASE WHEN SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                                   THEN 1 ELSE 0 END) > 0
+                THEN 100.0
+                     * SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won = 1
+                                THEN 1 ELSE 0 END)
+                     / SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                                THEN 1 ELSE 0 END)
                 ELSE 0 END
-            , 2)                                                              AS insider_score
+            , 1)                                                 AS longshot_win_rate,
+
+            -- Insider Score = (win_rate / 100) * total_pnl
+            ROUND(
+                CASE WHEN SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                                   THEN 1 ELSE 0 END) > 0
+                THEN (1.0
+                     * SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won = 1
+                                THEN 1 ELSE 0 END)
+                     / SUM(CASE WHEN tr.side='BUY' AND tr.price < 0.30 AND tr.outcome_won != -1
+                                THEN 1 ELSE 0 END))
+                     * t.total_pnl
+                ELSE 0 END
+            , 0)                                                 AS insider_score
+
         FROM traders t
         LEFT JOIN trades tr ON t.wallet = tr.wallet
         GROUP BY t.wallet
-        HAVING total >= ?
+        HAVING longshot_win_rate >= 65
         ORDER BY insider_score DESC, total_pnl DESC
         LIMIT ?
-    """, (min_trades, limit)).fetchall()
+    """, (limit,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
