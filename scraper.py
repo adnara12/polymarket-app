@@ -95,7 +95,7 @@ def is_relevant_market(question):
             return True
     return False
 
-LEADERBOARD_CATEGORIES = ["politics", "geopolitics", "tech", "economy", "sports"]
+LEADERBOARD_CATEGORIES = ["politics", "overall", "tech", "economics", "sports"]
 
 def fetch_leaderboard(category="politics", time_period="all", order_by="PNL", n=100):
     """Fetch top n traders from one leaderboard category (50 per page)."""
