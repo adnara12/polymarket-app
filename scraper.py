@@ -294,8 +294,8 @@ def scrape_from_leaderboard(n_traders=100, max_trades=200, workers=5,
     return total_trades
 
 def run_scraper(pages=10):
-    return scrape_from_leaderboard(n_traders=100, max_trades=200)
+    return scrape_from_leaderboard(n_traders=100, max_trades=5000)
 
 if __name__ == "__main__":
     init_db()
-    scrape_from_leaderboard(n_traders=100, max_trades=200)
+    scrape_from_leaderboard(n_traders=100, max_trades=5000)

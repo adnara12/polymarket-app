@@ -147,8 +147,12 @@
       </div>
       <div class="filters-row" style="margin-top:10px">
         <div class="filter-group">
-          <label>% Acierto long. mín.</label>
-          <input type="number" id="f-longshot" placeholder="65" min="0" max="100" oninput="applyFilters()">
+          <label>Mín. longshots acertados</label>
+          <input type="number" id="f-min-longshots" placeholder="0" min="0" step="1" oninput="applyFilters()">
+        </div>
+        <div class="filter-group">
+          <label>% Acierto longshot mín.</label>
+          <input type="number" id="f-longshot" value="65" min="0" max="100" oninput="applyFilters()">
         </div>
         <div class="filter-group">
           <label>Activo últimos días</label>
@@ -291,13 +295,14 @@ function updateStats(traders) {
 }
 
 function applyFilters() {
-  var search   = document.getElementById('f-search').value.toLowerCase();
-  var priceOp  = document.getElementById('f-price-op').value;
-  var priceVal = parseFloat(document.getElementById('f-price-val').value);
-  var invOp    = document.getElementById('f-inv-op').value;
-  var invVal   = parseFloat(document.getElementById('f-inv-val').value);
-  var longshot = parseFloat(document.getElementById('f-longshot').value) || 0;
-  var days     = parseInt(document.getElementById('f-days').value) || 0;
+  var search        = document.getElementById('f-search').value.toLowerCase();
+  var priceOp       = document.getElementById('f-price-op').value;
+  var priceVal      = parseFloat(document.getElementById('f-price-val').value);
+  var invOp         = document.getElementById('f-inv-op').value;
+  var invVal        = parseFloat(document.getElementById('f-inv-val').value);
+  var minLongshots  = parseInt(document.getElementById('f-min-longshots').value) || 0;
+  var longshot      = parseFloat(document.getElementById('f-longshot').value) || 0;
+  var days          = parseInt(document.getElementById('f-days').value) || 0;
   var sortKey  = document.getElementById('f-sort').value;
   var sortAsc  = document.getElementById('f-order').value === 'asc';
   var cutoff   = days ? new Date(Date.now() - days*86400000) : null;
@@ -312,6 +317,7 @@ function applyFilters() {
       if (invOp === 'gt' && (t.total_invested||0) <= invVal) return false;
       if (invOp === 'lt' && (t.total_invested||0) >= invVal) return false;
     }
+    if (minLongshots && (t.longshots_ganados||0) < minLongshots) return false;
     if (longshot && (t.longshot_win_rate||0) < longshot) return false;
     if (cutoff && t.last_seen && new Date(t.last_seen) < cutoff) return false;
     return true;
@@ -335,7 +341,8 @@ function resetFilters() {
   document.getElementById('f-price-val').value = '';
   document.getElementById('f-inv-op').value = '';
   document.getElementById('f-inv-val').value = '';
-  document.getElementById('f-longshot').value = '';
+  document.getElementById('f-min-longshots').value = '';
+  document.getElementById('f-longshot').value = '65';
   document.getElementById('f-days').value = '';
   document.getElementById('f-sort').value = 'insider_score';
   document.getElementById('f-order').value = 'desc';
