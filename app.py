@@ -67,6 +67,19 @@ def api_refresh():
     n = run_scraper(pages=5)
     return jsonify({"ok": True, "new_trades": n})
 
+@app.route("/api/test-alerts")
+def api_test_alerts():
+    import os
+    token   = os.environ.get("TELEGRAM_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    ok = send_telegram(
+        "<b>Test produccion</b>\n"
+        "Alertas Polymarket activas en Render.\n"
+        f"TOKEN configurado: {'SI' if token else 'NO'}\n"
+        f"CHAT_ID configurado: {'SI' if chat_id else 'NO'}"
+    )
+    return jsonify({"telegram_ok": ok, "token_set": bool(token), "chat_id_set": bool(chat_id)})
+
 # ── Scheduler ─────────────────────────────────────────────────────
 scheduler = BackgroundScheduler()
 scheduler.add_job(lambda: run_scraper(pages=5),       "interval", minutes=5,  id="scraper")
