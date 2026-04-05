@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from decimal import Decimal
 
 # ── Driver selection ────────────────────────────────────────────────────────
 # If DATABASE_URL is set (Render production) → PostgreSQL via psycopg2.
@@ -17,6 +18,11 @@ PH = "%s" if DB_TYPE == "postgres" else "?"   # positional placeholder
 if DB_TYPE == "postgres":
     import psycopg2
     import psycopg2.extras
+
+
+def _row(row):
+    """Convert a DB row to a plain dict, casting Decimal → float."""
+    return {k: float(v) if isinstance(v, Decimal) else v for k, v in dict(row).items()}
 
 
 def get_conn():
@@ -211,7 +217,7 @@ def get_ranking(min_trades=0, limit=500):
     """, (limit,))
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_row(r) for r in rows]
 
 
 def get_trader_trades(wallet, limit=200):
@@ -225,7 +231,7 @@ def get_trader_trades(wallet, limit=200):
     """, (wallet, limit))
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_row(r) for r in rows]
 
 
 def get_trader_stats(wallet):
@@ -234,7 +240,7 @@ def get_trader_stats(wallet):
     c.execute(f"SELECT * FROM traders WHERE wallet = {PH}", (wallet,))
     row = c.fetchone()
     conn.close()
-    return dict(row) if row else None
+    return _row(row) if row else None
 
 
 def get_watchlist():
@@ -243,7 +249,7 @@ def get_watchlist():
     c.execute("SELECT * FROM watchlist ORDER BY added_at DESC")
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [_row(r) for r in rows]
 
 
 def add_to_watchlist(wallet, alias=""):
