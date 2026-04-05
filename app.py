@@ -5,10 +5,13 @@ from database import (init_db, get_ranking, get_trader_trades,
                       get_watchlist, add_to_watchlist, remove_from_watchlist)
 from scraper import run_scraper
 from alerts import check_watchlist_alerts, send_telegram
+from datetime import datetime
 import atexit
 
 app = Flask(__name__)
 CORS(app)
+
+init_db()
 
 # ── Rutas HTML ─────────────────────────────────────────────────────
 @app.route("/")
@@ -82,12 +85,12 @@ def api_test_alerts():
 
 # ── Scheduler ─────────────────────────────────────────────────────
 scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: run_scraper(pages=5),       "interval", minutes=5,  id="scraper")
-scheduler.add_job(check_watchlist_alerts,             "interval", minutes=5,  id="alerts")
+scheduler.add_job(lambda: run_scraper(pages=5), "interval", minutes=5, id="scraper",
+                  next_run_time=datetime.now())
+scheduler.add_job(check_watchlist_alerts, "interval", minutes=5, id="alerts")
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
 
 # ── Arranque ──────────────────────────────────────────────────────
 if __name__ == "__main__":
-    init_db()
     app.run(debug=False, port=5000)
